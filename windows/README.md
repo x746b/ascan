@@ -1,6 +1,6 @@
 # ArtScan
 
-ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only 25 KB.
+ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only ~30 KB.
 
 This fork by @xtk adds UDP scanning to both Linux and Windows versions, plus unprivileged ICMP on Linux (no sudo required).
 
