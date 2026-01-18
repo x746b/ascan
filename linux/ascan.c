@@ -15,6 +15,8 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/uio.h>
+#include <linux/errqueue.h>
 #include <stdatomic.h>
 #include <ctype.h>
 #include <netdb.h>
@@ -27,8 +29,9 @@ static int g_rechecks       = 0;
 static int g_pingEnabled    = 1;
 static int g_isPingOnly     = 0;
 static int g_netbiosEnabled = 0; // -Nb flag support
+static int g_udpEnabled    = 0; // -sU flag for UDP scanning
 
-// Top 123 common ports as default
+// Top 123 common TCP ports as default
 static const char* DEFAULT_PORTS =
 "20,21,22,23,25,53,65,66,69,80,88,110,111,135,139,143,194,389,443,"
 "445,464,465,587,593,636,873,993,995,1194,1433,1494,1521,1540,1666,1801,"
@@ -39,6 +42,9 @@ static const char* DEFAULT_PORTS =
 "8529,8530,8531,8600,8888,8912,9000,9042,9080,9090,9092,9160,9200,9229,9300,9389,"
 "9443,9515,9999,10000,10001,10011,10050,10051,11211,15672,17990,27015,27017,30033,47001";
 
+// Top UDP ports for -sU without explicit port list
+static const char* DEFAULT_UDP_PORTS = "53,67,68,69,123,137,138,161,500,514,1194,1900";
+
 // Per-IP result struct
 typedef struct {
     char ip[INET_ADDRSTRLEN];
@@ -47,6 +53,8 @@ typedef struct {
     int detailCount, detailCap;
     int *openPorts;
     int openCount, openCap;
+    int *openUdpPorts;
+    int openUdpCount, openUdpCap;
     atomic_int responded;
     pthread_mutex_t cs;
 } IPResult;
@@ -55,9 +63,12 @@ static IPResult *g_ipResults = NULL;
 static int g_ipCount = 0;
 static int *g_ports = NULL;
 static int g_portCount = 0;
+static int *g_udpPorts = NULL;
+static int g_udpPortCount = 0;
 static atomic_int g_taskIndex;
 static atomic_int g_pingProgress;
 static atomic_int g_portProgress;
+static atomic_int g_udpProgress;
 
 static void print_header(void) {
     printf("\033[36m");
@@ -66,6 +77,7 @@ static void print_header(void) {
     printf("|     |  _|  _|__   |  _| .'|   |\n");
     printf("|__|__|_| |_| |_____|___|__,|_|_|\n");
     printf("\033[32mArtScan by @art3x (Linux) ver 1.3\033[0m\n");
+    printf("\033[35mforked by xtk -> added UDP scan & unprivileged ICMP\033[0m\n");
     printf("\033[34mhttps://github.com/art3x\033[0m\n\n");
 }
 
@@ -231,14 +243,26 @@ static void add_open(int idx, int port) {
     pthread_mutex_unlock(&r->cs);
 }
 
-// Parse ports spec (e.g. "22,80-90")
-static int parse_ports(const char *spec) {
+// Thread-safe record open UDP port
+static void add_open_udp(int idx, int port) {
+    IPResult *r = &g_ipResults[idx];
+    pthread_mutex_lock(&r->cs);
+    if (r->openUdpCount >= r->openUdpCap) {
+        r->openUdpCap = r->openUdpCap ? r->openUdpCap * 2 : 4;
+        r->openUdpPorts = realloc(r->openUdpPorts, r->openUdpCap * sizeof(int));
+    }
+    r->openUdpPorts[r->openUdpCount++] = port;
+    pthread_mutex_unlock(&r->cs);
+}
+
+// Parse ports spec (e.g. "22,80-90") into provided output arrays
+static int parse_ports_into(const char *spec, int **out_ports, int *out_count) {
     if (!spec) return 0;
     if (!strcasecmp(spec, "all")) {
-        g_portCount = 65535;
-        g_ports = malloc(g_portCount * sizeof(int));
-        if (!g_ports) return 0;
-        for (int p = 0; p < g_portCount; p++) g_ports[p] = p + 1;
+        *out_count = 65535;
+        *out_ports = malloc(*out_count * sizeof(int));
+        if (!*out_ports) return 0;
+        for (int p = 0; p < *out_count; p++) (*out_ports)[p] = p + 1;
         return 1;
     }
     char *s = strdup(spec);
@@ -259,12 +283,22 @@ static int parse_ports(const char *spec) {
     }
     free(s);
     if (cnt > 0) {
-        g_ports = malloc(cnt * sizeof(int));
-        memcpy(g_ports, tmp, cnt * sizeof(int));
+        *out_ports = malloc(cnt * sizeof(int));
+        memcpy(*out_ports, tmp, cnt * sizeof(int));
     }
-    g_portCount = cnt;
+    *out_count = cnt;
     free(tmp);
     return 1;
+}
+
+// Parse TCP ports spec
+static int parse_ports(const char *spec) {
+    return parse_ports_into(spec, &g_ports, &g_portCount);
+}
+
+// Parse UDP ports spec
+static int parse_udp_ports(const char *spec) {
+    return parse_ports_into(spec, &g_udpPorts, &g_udpPortCount);
 }
 
 // Helper to resolve a hostname to an IPv4 string
@@ -335,9 +369,11 @@ int setup_ip_targets(const char *startIp, const char *endIp) {
 
 enum { ICMP_PACKET_SIZE = sizeof(struct icmphdr) + 32 };
 
-// Ping thread
+// Ping thread - uses SOCK_DGRAM for unprivileged ICMP (no sudo required)
 static void *worker_ping(void *_) {
-    int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    // SOCK_DGRAM + IPPROTO_ICMP = unprivileged ICMP (Linux 3.0+)
+    // Note: kernel manages ICMP ID (based on socket port) and checksum
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP);
     if (sock < 0) { return NULL; }
     struct timeval tv = { g_ctimeout / 1000, (g_ctimeout % 1000) * 1000 };
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -352,10 +388,9 @@ static void *worker_ping(void *_) {
         memset(pkt, 0, ICMP_PACKET_SIZE);
         hdr->type = ICMP_ECHO;
         hdr->code = 0;
-        hdr->un.echo.id = htons(getpid() & 0xFFFF);
+        hdr->un.echo.id = 0;  // Kernel will set this
         hdr->un.echo.sequence = htons(idx & 0xFFFF);
-        hdr->checksum = 0;
-        hdr->checksum = checksum(hdr, ICMP_PACKET_SIZE);
+        // Kernel calculates checksum for DGRAM ICMP
 
         struct sockaddr_in dst = { .sin_family = AF_INET };
         inet_pton(AF_INET, g_ipResults[idx].ip, &dst.sin_addr);
@@ -368,12 +403,12 @@ static void *worker_ping(void *_) {
             int n = recvfrom(sock, buf, sizeof(buf), 0, (struct sockaddr*)&peer, &plen);
             if (n <= 0) break;
 
-            struct ip *ip_hdr = (struct ip*)buf;
-            unsigned ihl = ip_hdr->ip_hl * 4;
-            if ((unsigned)n < ihl + sizeof(struct icmphdr)) continue;
-            struct icmphdr *icm = (struct icmphdr*)(buf + ihl);
+            // DGRAM ICMP sockets return ICMP payload directly (no IP header)
+            if ((size_t)n < sizeof(struct icmphdr)) continue;
+            struct icmphdr *icm = (struct icmphdr*)buf;
 
-            if (icm->type == ICMP_ECHOREPLY && icm->un.echo.id == hdr->un.echo.id && icm->un.echo.sequence == hdr->un.echo.sequence) {
+            // For DGRAM sockets, kernel manages ID - just check type and sequence
+            if (icm->type == ICMP_ECHOREPLY && icm->un.echo.sequence == hdr->un.echo.sequence) {
                 atomic_store(&g_ipResults[idx].responded, 1);
 
                 if (g_netbiosEnabled) {
@@ -486,6 +521,106 @@ static void *worker_port(void *_) {
     return NULL;
 }
 
+// UDP port scan worker thread
+static void *worker_port_udp(void *_) {
+    int total = g_ipCount * g_udpPortCount;
+    while (1) {
+        int t = atomic_fetch_add(&g_taskIndex, 1);
+        if (t >= total) break;
+
+        int idx  = t / g_udpPortCount;
+        int port = g_udpPorts[t % g_udpPortCount];
+        if (g_pingEnabled && !atomic_load(&g_ipResults[idx].responded)) {
+            atomic_fetch_add(&g_udpProgress, 1);
+            continue;
+        }
+
+        char msg[1024];
+        int is_open = 0;
+        int is_closed = 0;
+
+        for (int attempt = 0; attempt <= g_rechecks && !is_closed; attempt++) {
+            int sock = socket(AF_INET, SOCK_DGRAM, 0);
+            if (sock < 0) continue;
+
+            // Enable IP_RECVERR to properly receive ICMP errors
+            int one = 1;
+            setsockopt(sock, IPPROTO_IP, IP_RECVERR, &one, sizeof(one));
+
+            struct sockaddr_in sa = {.sin_family = AF_INET, .sin_port = htons(port)};
+            inet_pton(AF_INET, g_ipResults[idx].ip, &sa.sin_addr);
+
+            // Connect UDP socket to detect ICMP errors
+            if (connect(sock, (struct sockaddr*)&sa, sizeof(sa)) < 0) {
+                close(sock);
+                continue;
+            }
+
+            // Send probe
+            char probe[1] = {0};
+            if (send(sock, probe, sizeof(probe), 0) < 0) {
+                if (errno == ECONNREFUSED) { is_closed = 1; }
+                close(sock);
+                continue;
+            }
+
+            // Wait for ICMP using select with timeout
+            fd_set rfds, efds;
+            FD_ZERO(&rfds); FD_SET(sock, &rfds);
+            FD_ZERO(&efds); FD_SET(sock, &efds);
+            struct timeval tv = {0, g_ctimeout * 1000}; // timeout in microseconds
+
+            int sel = select(sock + 1, &rfds, NULL, &efds, &tv);
+
+            if (sel > 0) {
+                // Check error queue first (IP_RECVERR puts ICMP errors here)
+                char errbuf[512];
+                struct iovec iov = { errbuf, sizeof(errbuf) };
+                char control[256];
+                struct msghdr msgh = {0};
+                msgh.msg_iov = &iov;
+                msgh.msg_iovlen = 1;
+                msgh.msg_control = control;
+                msgh.msg_controllen = sizeof(control);
+
+                int ret = recvmsg(sock, &msgh, MSG_ERRQUEUE | MSG_DONTWAIT);
+                if (ret >= 0) {
+                    // Got an ICMP error - port is closed
+                    is_closed = 1;
+                } else if (FD_ISSET(sock, &rfds)) {
+                    // Data available - try to read
+                    char buf[512];
+                    int n = recv(sock, buf, sizeof(buf), MSG_DONTWAIT);
+                    if (n > 0) {
+                        is_open = 1; // Got actual response
+                    } else if (n < 0 && errno == ECONNREFUSED) {
+                        is_closed = 1;
+                    } else {
+                        is_open = 1; // Treat as open|filtered
+                    }
+                }
+            } else if (sel == 0) {
+                // Timeout - no ICMP error received, port is open|filtered
+                is_open = 1;
+            }
+
+            close(sock);
+            if (is_open || is_closed) break;
+        }
+
+        if (is_open && !is_closed) {
+            snprintf(msg, sizeof(msg), "%s:%d/udp \033[36mopen|filtered\033[0m", g_ipResults[idx].ip, port);
+            add_open_udp(idx, port);
+            add_detail(idx, msg);
+        }
+        atomic_fetch_add(&g_udpProgress, 1);
+
+        // Delay to avoid ICMP rate limiting (500ms between probes)
+        usleep(500000);
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     char *targetSpec = NULL;
     char *portSpec = NULL;
@@ -497,6 +632,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-Pn")) g_pingEnabled = 0;
         else if (!strcmp(argv[i], "-i")) g_isPingOnly = 1;
         else if (!strcmp(argv[i], "-Nb")) g_netbiosEnabled = 1;
+        else if (!strcmp(argv[i], "-sU")) g_udpEnabled = 1;
         else if (!strcmp(argv[i], "-h")) {
             printf("Usage: %s <target> [ports] [options]\n", argv[0]);
             printf("  target:    Hostname (e.g., scanme.nmap.org), single IP, or range (192.168.1.1-100)\n");
@@ -507,8 +643,12 @@ int main(int argc, char **argv) {
             printf("  -r <num>:  Set extra rechecks for unanswered ports (default: %d)\n", 0);
             printf("  -Pn:       Disable ping (skip host discovery)\n");
             printf("  -i:        Perform icmp scan only (skip port scan)\n");
+            printf("  -sU:       Enable UDP scan (uses TOP 12 UDP ports if no ports specified)\n");
             printf("  -Nb:       Enable hostname resolution via reverse DNS lookup\n");
             printf("  -h:        Display this help message\n");
+            printf("\nUDP Scanning Notes:\n");
+            printf("  Default UDP ports: 53,67,68,69,123,137,138,161,500,514,1194,1900\n");
+            printf("  UDP scanning is slower due to ICMP rate limiting on targets\n");
             return 0;
         } else if (argv[i][0] == '-') { fprintf(stderr, "Unknown option: %s\n", argv[i]); return 1; }
         else {
@@ -521,6 +661,14 @@ int main(int argc, char **argv) {
 
     if (!targetSpec) { fprintf(stderr, "Error: Target required. Use -h for help.\n"); return 1; }
     if (!portSpec && !g_isPingOnly) portSpec = (char*)DEFAULT_PORTS;
+
+    // For UDP: use user-specified ports, or DEFAULT_UDP_PORTS if -sU without ports
+    char *udpPortSpec = portSpec;
+    int udpUsingDefault = 0;
+    if (g_udpEnabled && portSpec == DEFAULT_PORTS) {
+        udpPortSpec = (char*)DEFAULT_UDP_PORTS;
+        udpUsingDefault = 1;
+    }
 
     char startIp[INET_ADDRSTRLEN], endIp[INET_ADDRSTRLEN];
     if (parse_ip_range_spec(targetSpec, startIp, endIp)) {
@@ -537,23 +685,28 @@ int main(int argc, char **argv) {
         }
         strncpy(endIp, startIp, sizeof(endIp));
     }
-    
+
     printf("\033[97m");
     printf("[.] Scanning Target: %s\n", targetSpec);
     if (!g_isPingOnly) {
-        printf("[.] PORT(s): %s\n", portSpec == DEFAULT_PORTS ? "TOP 123" : portSpec);
+        printf("[.] TCP ports: %s\n", portSpec == DEFAULT_PORTS ? "TOP 123" : portSpec);
+        if (g_udpEnabled) {
+            printf("[.] UDP ports: %s\n", udpUsingDefault ? "TOP 12 (53,67,68,69,123,137,138,161,500,514,1194,1900)" : udpPortSpec);
+        }
     } else {
         printf("[.] Ping-only scan mode\n");
     }
-    printf("[.] Threads: %d   Rechecks: %d   Timeout: %d\n", g_threadLimit, g_rechecks, g_ctimeout);
+    printf("[.] Threads: %d   Rechecks: %d   Timeout: %d ms\n", g_threadLimit, g_rechecks, g_ctimeout);
     if (!g_pingEnabled) printf("[.] Ping disabled (-Pn flag used)\n");
     printf("\033[0m\n");
 
     struct timespec t0,t1; clock_gettime(CLOCK_MONOTONIC,&t0);
     if (!setup_ip_targets(startIp, endIp)) { fprintf(stderr, "Invalid IP range setup.\n"); return 1; }
     if (!g_isPingOnly && !parse_ports(portSpec)) { fprintf(stderr, "Invalid port specification.\n"); return 1; }
+    if (g_udpEnabled && !parse_udp_ports(udpPortSpec)) { fprintf(stderr, "Invalid UDP port specification.\n"); return 1; }
     atomic_init(&g_pingProgress, 0);
     atomic_init(&g_portProgress, 0);
+    atomic_init(&g_udpProgress, 0);
 
     pthread_t *threads = malloc(sizeof(pthread_t) * g_threadLimit);
     if (g_pingEnabled) {
@@ -572,8 +725,9 @@ int main(int argc, char **argv) {
     }
 
     if (!g_isPingOnly) {
+        // TCP scan
         long totalPorts = (long)g_ipCount * (long)g_portCount;
-        ProgressCtx portCtx = {.label = "Ports", .counter = &g_portProgress, .total = (int)totalPorts};
+        ProgressCtx portCtx = {.label = "TCP", .counter = &g_portProgress, .total = (int)totalPorts};
         atomic_init(&portCtx.stopFlag, 0);
         pthread_t portProgThread;
         int usePortProgress = totalPorts > 0;
@@ -581,7 +735,23 @@ int main(int argc, char **argv) {
         if (usePortProgress) pthread_create(&portProgThread, NULL, progress_worker, &portCtx);
         for (int i = 0; i < g_threadLimit; i++) pthread_create(&threads[i], NULL, worker_port, NULL);
         for (int i = 0; i < g_threadLimit; i++) pthread_join(threads[i], NULL);
-        if (usePortProgress) { atomic_store(&portCtx.stopFlag, 1); pthread_join(portProgThread, NULL); printf("\n"); }
+        if (usePortProgress) { atomic_store(&portCtx.stopFlag, 1); pthread_join(portProgThread, NULL); }
+
+        // UDP scan (if enabled) - single thread to avoid ICMP rate limiting on target
+        if (g_udpEnabled && g_udpPortCount > 0) {
+            int udpThreads = 1; // Single thread for UDP (ICMP rate limiting)
+            long totalUdpPorts = (long)g_ipCount * (long)g_udpPortCount;
+            ProgressCtx udpCtx = {.label = "UDP", .counter = &g_udpProgress, .total = (int)totalUdpPorts};
+            atomic_init(&udpCtx.stopFlag, 0);
+            pthread_t udpProgThread;
+            int useUdpProgress = totalUdpPorts > 0;
+            atomic_init(&g_taskIndex, 0);
+            if (useUdpProgress) pthread_create(&udpProgThread, NULL, progress_worker, &udpCtx);
+            for (int i = 0; i < udpThreads; i++) pthread_create(&threads[i], NULL, worker_port_udp, NULL);
+            for (int i = 0; i < udpThreads; i++) pthread_join(threads[i], NULL);
+            if (useUdpProgress) { atomic_store(&udpCtx.stopFlag, 1); pthread_join(udpProgThread, NULL); }
+        }
+        printf("\n");
     }
     free(threads);
 
@@ -600,15 +770,28 @@ int main(int argc, char **argv) {
     printf("\033[33m\nSummary:\n\033[0m");
     for (int i = 0; i < g_ipCount; i++) {
         IPResult *r = &g_ipResults[i];
-        if (r->openCount > 0) {
+        if (r->openCount > 0 || r->openUdpCount > 0) {
             if (g_isPingOnly) {
                 if (r->netbiosName[0]) printf("%s (%s) responded to ping\n", r->ip, r->netbiosName);
                 else printf("%s responded to ping\n", r->ip);
             } else {
-                qsort(r->openPorts, r->openCount, sizeof(int), cmp_int);
                 if (r->netbiosName[0]) printf("%s (%s): ", r->ip, r->netbiosName);
                 else printf("%s: ", r->ip);
-                for (int j = 0; j < r->openCount; j++) printf("%d%s", r->openPorts[j], j < r->openCount - 1 ? "," : "");
+
+                // Print TCP ports
+                if (r->openCount > 0) {
+                    qsort(r->openPorts, r->openCount, sizeof(int), cmp_int);
+                    printf("TCP ");
+                    for (int j = 0; j < r->openCount; j++) printf("%d%s", r->openPorts[j], j < r->openCount - 1 ? "," : "");
+                }
+
+                // Print UDP ports
+                if (r->openUdpCount > 0) {
+                    if (r->openCount > 0) printf(" | ");
+                    qsort(r->openUdpPorts, r->openUdpCount, sizeof(int), cmp_int);
+                    printf("UDP ");
+                    for (int j = 0; j < r->openUdpCount; j++) printf("%d%s", r->openUdpPorts[j], j < r->openUdpCount - 1 ? "," : "");
+                }
                 printf("\n");
             }
         }
@@ -618,10 +801,12 @@ int main(int argc, char **argv) {
     
     // Cleanup
     if (g_ports) free(g_ports);
+    if (g_udpPorts) free(g_udpPorts);
     for (int i = 0; i < g_ipCount; i++) {
         for (int j = 0; j < g_ipResults[i].detailCount; j++) free(g_ipResults[i].details[j]);
         free(g_ipResults[i].details);
         free(g_ipResults[i].openPorts);
+        free(g_ipResults[i].openUdpPorts);
         pthread_mutex_destroy(&g_ipResults[i].cs);
     }
     free(g_ipResults);
