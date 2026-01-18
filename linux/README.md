@@ -9,7 +9,7 @@ This fork by @xtk adds UDP scanning and unprivileged ICMP (no sudo required on m
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Super fast smart scan of TOP 123 most common TCP ports by default
+* Super fast smart scan of TOP 124 most common TCP ports by default
 * UDP scanning with TOP 12 common UDP ports (DNS, SNMP, NTP, DHCP, etc.)
 * No sudo required - uses unprivileged ICMP sockets (Linux 3.0+)
 * Scan progress indicator
@@ -50,10 +50,10 @@ Options:
 ## Examples
 
 ```bash
-# Basic TCP scan (TOP 123 ports)
+# Basic TCP scan (TOP 124 ports)
 ./ascan 192.168.1.1
 
-# TCP + UDP scan (TOP 123 TCP + TOP 12 UDP)
+# TCP + UDP scan (TOP 124 TCP + TOP 12 UDP)
 ./ascan 192.168.1.1 -sU
 
 # Scan specific ports (TCP + UDP)
@@ -73,14 +73,14 @@ Options:
 
 ![ArtScan](../images/ascan_lin_udp.png)
 
-Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900
+Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 124, 137, 138, 161, 500, 514, 1194, 1900
 
 | Port | Service |
 |------|---------|
 | 53 | DNS |
 | 67/68 | DHCP |
 | 69 | TFTP |
-| 123 | NTP |
+| 124 | NTP |
 | 137/138 | NetBIOS |
 | 161 | SNMP |
 | 500 | IKE/IPsec |
