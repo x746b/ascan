@@ -53,10 +53,10 @@ Options:
 ## Examples
 
 ```bash
-# Basic TCP scan (TOP 123 ports)
+# Basic TCP scan (TOP 124 ports)
 ./ascan 192.168.1.1
 
-# TCP + UDP scan (TOP 123 TCP + TOP 12 UDP)
+# TCP + UDP scan (TOP 124 TCP + TOP 12 UDP)
 ./ascan 192.168.1.1 -sU
 
 # Scan specific ports (TCP + UDP)
@@ -76,14 +76,14 @@ Options:
 
 ![ArtScan](../images/ascan_win_udp.png)
 
-Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900
+Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 124, 137, 138, 161, 500, 514, 1194, 1900
 
 | Port | Service |
 |------|---------|
 | 53 | DNS |
 | 67/68 | DHCP |
 | 69 | TFTP |
-| 123 | NTP |
+| 124 | NTP |
 | 137/138 | NetBIOS |
 | 161 | SNMP |
 | 500 | IKE/IPsec |
