@@ -1,8 +1,8 @@
 # ArtScan (Linux version)
 
-ArtScan is a tiny, convenient, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only **25 KB**.
+ArtScan is a tiny, convenient, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only 25 KB.
 
-**This fork by @xtk adds UDP scanning and unprivileged ICMP (no sudo required on modern Linux).**
+This fork by @xtk adds UDP scanning and unprivileged ICMP (no sudo required on modern Linux).
 
 ![ArtScan](images/ascan.png)
 
@@ -10,8 +10,8 @@ ArtScan is a tiny, convenient, and very fast port scanner written in C. It is pe
 
 * IP ranges and port ranges scan with threads and timeout adjustments
 * Super fast smart scan of TOP 123 most common TCP ports by default
-* **UDP scanning** with TOP 12 common UDP ports (DNS, SNMP, NTP, DHCP, etc.)
-* **No sudo required** - uses unprivileged ICMP sockets (Linux 3.0+)
+* UDP scanning with TOP 12 common UDP ports (DNS, SNMP, NTP, DHCP, etc.)
+* No sudo required - uses unprivileged ICMP sockets (Linux 3.0+)
 * Scan progress indicator
 * Perform ping scan only (skip port scan)
 * Capture banners and HTTP responses on open ports
@@ -71,7 +71,7 @@ Options:
 
 ## UDP Scanning Notes
 
-Default UDP ports scanned with `-sU`: `53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900`
+Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900
 
 | Port | Service |
 |------|---------|
@@ -90,9 +90,9 @@ UDP scanning is inherently slower than TCP due to ICMP rate limiting on target h
 
 ## Fork Changes (by @xtk)
 
-- **Unprivileged ICMP**: Uses `SOCK_DGRAM` ICMP sockets instead of raw sockets - no root/sudo required on Kali and most modern Linux distributions
-- **UDP scanning**: Added `-sU` flag with smart default port list for common UDP services
-- **Separate port lists**: TCP and UDP can use different port lists (UDP defaults to TOP 12 when not specified)
+- Unprivileged ICMP: Uses `SOCK_DGRAM` ICMP sockets instead of raw sockets - no root/sudo required on Kali and most modern Linux distributions
+- UDP scanning: Added `-sU` flag with smart default port list for common UDP services
+- Separate port lists: TCP and UDP can use different port lists (UDP defaults to TOP 12 when not specified)
 
 ## Credits
 

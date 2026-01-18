@@ -1,8 +1,8 @@
 # ArtScan (Windows version)
 
-ArtScan is a tiny, convenient, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only **25 KB**.
+ArtScan is a tiny, convenient, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only 25 KB.
 
-**This fork by @xtk adds UDP scanning.**
+This fork by @xtk adds UDP scanning.
 
 ![ArtScan](images/ascan.png)
 
@@ -10,7 +10,7 @@ ArtScan is a tiny, convenient, and very fast port scanner written in C. It is pe
 
 * IP ranges and port ranges scan with threads and timeout adjustments
 * Super fast smart scan of TOP 123 most common TCP ports by default
-* **UDP scanning** with TOP 12 common UDP ports (DNS, SNMP, NTP, DHCP, etc.)
+* UDP scanning with TOP 12 common UDP ports (DNS, SNMP, NTP, DHCP, etc.)
 * Scan progress indicator
 * Perform ping scan only (skip port scan)
 * Capture banners and HTTP responses on open ports
@@ -25,7 +25,7 @@ Usage: <target> [portRange] [options]
   portRange: Single port, range (80-90), comma-separated list (22,80,443), or 'all'
 Options:
   -T <num>:  Set thread limit (default: 20, max: 50)
-  -t <ms>:   Set port scan timeout in msec (default: 100)
+  -t <ms>:   Set port scan timeout in msec (default: 300)
   -r <num>:  Set extra rechecks for unanswered ports (default: 0, max: 10)
   -Pn:       Disable ping (skip host discovery)
   -i:        Perform ping scan only (skip port scan)
@@ -58,7 +58,7 @@ ascan.exe 192.168.1.1-254 -i
 
 ## UDP Scanning Notes
 
-Default UDP ports scanned with `-sU`: `53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900`
+Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900
 
 | Port | Service |
 |------|---------|
@@ -77,8 +77,8 @@ UDP scanning is inherently slower than TCP due to ICMP rate limiting on target h
 
 ## Fork Changes (by @xtk)
 
-- **UDP scanning**: Added `-sU` flag with smart default port list for common UDP services
-- **Separate port lists**: TCP and UDP can use different port lists (UDP defaults to TOP 12 when not specified)
+- UDP scanning: Added `-sU` flag with smart default port list for common UDP services
+- Separate port lists: TCP and UDP can use different port lists (UDP defaults to TOP 12 when not specified)
 
 ## Credits
 
