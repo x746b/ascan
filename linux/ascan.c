@@ -16,7 +16,18 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/uio.h>
-#include <linux/errqueue.h>
+// Fallback definitions for musl/minimal libc environments
+#ifdef __has_include
+#  if __has_include(<linux/errqueue.h>)
+#    include <linux/errqueue.h>
+#  endif
+#endif
+#ifndef IP_RECVERR
+#  define IP_RECVERR 11
+#endif
+#ifndef MSG_ERRQUEUE
+#  define MSG_ERRQUEUE 0x2000
+#endif
 #include <stdatomic.h>
 #include <ctype.h>
 #include <netdb.h>
