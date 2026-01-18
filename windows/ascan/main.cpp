@@ -750,16 +750,12 @@ int scan_udp_port(const char* ip, int port, int ipIndex) {
         if (sock == INVALID_SOCKET)
             continue;
 
-        // Ensure ICMP errors are reported on connected UDP sockets (default on Windows, but be explicit)
+        // Ensure ICMP errors are reported on connected UDP sockets
         // SIO_UDP_CONNRESET controls whether ICMP port unreachable triggers WSAECONNRESET
         BOOL bNewBehavior = TRUE;
         DWORD dwBytesReturned = 0;
         WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior),
                  NULL, 0, &dwBytesReturned, NULL, NULL);
-
-        // Set socket to non-blocking mode
-        u_long mode = 1;
-        ioctlsocket(sock, FIONBIO, &mode);
 
         struct sockaddr_in server;
         memset(&server, 0, sizeof(server));
@@ -773,7 +769,7 @@ int scan_udp_port(const char* ip, int port, int ipIndex) {
             continue;
         }
 
-        // Send probe packet
+        // Send first probe packet
         char probe[1] = { 0 };
         if (send(sock, probe, sizeof(probe), 0) == SOCKET_ERROR) {
             int err = WSAGetLastError();
@@ -782,17 +778,28 @@ int scan_udp_port(const char* ip, int port, int ipIndex) {
                 closesocket(sock);
                 continue;
             }
-            // WSAEWOULDBLOCK is expected for non-blocking, ignore it
-            if (err != WSAEWOULDBLOCK) {
+        }
+
+        // Wait for ICMP error to arrive
+        Sleep(g_ctimeout);
+
+        // On Windows, ICMP errors are reported on the NEXT send/recv after the error arrives
+        // Try sending another probe - if ICMP port unreachable arrived, this will fail with WSAECONNRESET
+        if (send(sock, probe, sizeof(probe), 0) == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            if (err == WSAECONNRESET) {
+                // ICMP port unreachable received - port is closed
+                is_closed = 1;
                 closesocket(sock);
                 continue;
             }
         }
 
-        // Wait for ICMP error to arrive (give target time to respond)
-        Sleep(g_ctimeout);
+        // Also try recv with timeout to check for actual response or pending error
+        // Set a short receive timeout
+        DWORD timeout = 100; // 100ms
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
 
-        // Now try to receive - this will return WSAECONNRESET if ICMP port unreachable arrived
         char buf[512];
         int n = recv(sock, buf, sizeof(buf), 0);
         if (n > 0) {
@@ -805,12 +812,12 @@ int scan_udp_port(const char* ip, int port, int ipIndex) {
                 // ICMP port unreachable received - port is closed
                 is_closed = 1;
             }
-            else if (err == WSAEWOULDBLOCK) {
+            else if (err == WSAETIMEDOUT || err == WSAEWOULDBLOCK) {
                 // No response and no ICMP error - port is open|filtered
                 is_open = 1;
             }
             else {
-                // Other error - try again or treat as filtered
+                // Other error - treat as filtered
                 is_open = 1;
             }
         }
