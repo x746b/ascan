@@ -45,6 +45,15 @@ static int g_isPingOnly = 0;  // if nonzero, perform ping-only scan
 // Global flag for hostname resolution (like ping -a). Default is OFF.
 static int g_netbiosEnabled = 0;
 
+// UDP scanning support
+static int g_udpEnabled = 0;  // -sU flag for UDP scanning
+static int* g_udpPorts = NULL;
+static int g_udpPortCount = 0;
+static LONG g_udpProgress = 0;
+
+// Default UDP ports for -sU without explicit port list
+static const char* DEFAULT_UDP_PORTS = "53,67,68,69,123,137,138,161,500,514,1194,1900";
+
 static LONG g_pingProgress = 0;
 static LONG g_portProgress = 0;
 static bool g_headerPrintedStdout = false;
@@ -58,9 +67,12 @@ typedef struct _IPResult {
     char** details;        // Array of detailed message strings for each open port or ping result.
     int detailCount;
     int detailCapacity;
-    int* openPorts;        // Array of open port numbers (for summary). In ping-only mode, a dummy value (0) is added.
+    int* openPorts;        // Array of open TCP port numbers (for summary). In ping-only mode, a dummy value (0) is added.
     int openCount;
     int openCapacity;
+    int* openUdpPorts;     // Array of open UDP port numbers
+    int openUdpCount;
+    int openUdpCapacity;
     CRITICAL_SECTION cs;   // To protect updates to this IP's result.
     int responded;         // set to 1 if the IP responded to ping.
 } IPResult;
@@ -76,6 +88,8 @@ static void print_header_stdout() {
     printf("|__|__|_| |_| |_____|___|__,|_|_|\n");
     if (g_supportsANSI) printf("\033[32m");
     printf("ArtScan by @art3x (Windows) ver 1.3\n");
+    if (g_supportsANSI) printf("\033[35m");
+    printf("forked by xtk -> added UDP scan\n");
     if (g_supportsANSI) printf("\033[34m");
     printf("https://github.com/art3x\n");
     if (g_supportsANSI) printf("\033[0m");
@@ -96,6 +110,7 @@ static void cleanup_ip_results() {
         }
         free(ipRes->details);
         free(ipRes->openPorts);
+        free(ipRes->openUdpPorts);
     }
 
     free(g_ipResults);
@@ -154,6 +169,43 @@ void add_ip_result(int ipIndex, int port, const char* message) {
         ipRes->openCapacity = newCapacity;
     }
     ipRes->openPorts[ipRes->openCount++] = port;
+    LeaveCriticalSection(&ipRes->cs);
+}
+
+// ----------------------
+// Helper: Append a UDP result for an IP (thread-safe)
+// ----------------------
+void add_udp_result(int ipIndex, int port, const char* message) {
+    if (ipIndex < 0 || ipIndex >= g_ipCount)
+        return;
+    IPResult* ipRes = &g_ipResults[ipIndex];
+    EnterCriticalSection(&ipRes->cs);
+    // Append the detailed message.
+    if (ipRes->detailCount >= ipRes->detailCapacity) {
+        int newCapacity = (ipRes->detailCapacity == 0) ? 4 : ipRes->detailCapacity * 2;
+        char** newDetails = (char**)realloc(ipRes->details, newCapacity * sizeof(char*));
+        if (!newDetails) {
+            LeaveCriticalSection(&ipRes->cs);
+            return;
+        }
+        ipRes->details = newDetails;
+        ipRes->detailCapacity = newCapacity;
+    }
+    ipRes->details[ipRes->detailCount] = _strdup(message);
+    ipRes->detailCount++;
+
+    // Add the port number to the openUdpPorts list.
+    if (ipRes->openUdpCount >= ipRes->openUdpCapacity) {
+        int newCapacity = (ipRes->openUdpCapacity == 0) ? 4 : ipRes->openUdpCapacity * 2;
+        int* newPorts = (int*)realloc(ipRes->openUdpPorts, newCapacity * sizeof(int));
+        if (!newPorts) {
+            LeaveCriticalSection(&ipRes->cs);
+            return;
+        }
+        ipRes->openUdpPorts = newPorts;
+        ipRes->openUdpCapacity = newCapacity;
+    }
+    ipRes->openUdpPorts[ipRes->openUdpCount++] = port;
     LeaveCriticalSection(&ipRes->cs);
 }
 
@@ -679,6 +731,106 @@ unsigned __stdcall port_thread(void* param) {
 }
 
 // ----------------------
+// UDP Port Scanning
+// ----------------------
+int scan_udp_port(const char* ip, int port, int ipIndex) {
+    int totalAttempts = 1 + g_rechecks;
+    int is_open = 0;
+    int is_closed = 0;
+    char message[1024] = { 0 };
+
+    for (int attempt = 0; attempt < totalAttempts && !is_closed; attempt++) {
+        SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock == INVALID_SOCKET)
+            continue;
+
+        // Set socket to report ICMP errors
+        BOOL bNewBehavior = FALSE;
+        DWORD dwBytesReturned = 0;
+        // SIO_UDP_CONNRESET: When FALSE, ICMP port unreachable won't reset the socket
+        // We actually want it to report errors, so we don't set this
+
+        struct sockaddr_in server;
+        memset(&server, 0, sizeof(server));
+        server.sin_family = AF_INET;
+        server.sin_port = htons(port);
+        inet_pton(AF_INET, ip, &server.sin_addr);
+
+        // Connect UDP socket to detect ICMP errors
+        if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR) {
+            closesocket(sock);
+            continue;
+        }
+
+        // Send probe
+        char probe[1] = { 0 };
+        if (send(sock, probe, sizeof(probe), 0) == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            if (err == WSAECONNRESET) {
+                is_closed = 1;
+            }
+            closesocket(sock);
+            continue;
+        }
+
+        // Wait for response or ICMP error
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sock, &readfds);
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = g_ctimeout * 1000;
+
+        int sel = select(0, &readfds, NULL, NULL, &tv);
+        if (sel > 0) {
+            char buf[512];
+            int n = recv(sock, buf, sizeof(buf), 0);
+            if (n > 0) {
+                // Got actual response - port is definitely open
+                is_open = 1;
+            }
+            else if (n == SOCKET_ERROR) {
+                int err = WSAGetLastError();
+                if (err == WSAECONNRESET) {
+                    // ICMP port unreachable received
+                    is_closed = 1;
+                }
+                else {
+                    // Other error, treat as open|filtered
+                    is_open = 1;
+                }
+            }
+        }
+        else if (sel == 0) {
+            // Timeout - no ICMP error, port is open|filtered
+            is_open = 1;
+        }
+
+        closesocket(sock);
+        if (is_open || is_closed) break;
+    }
+
+    if (is_open && !is_closed) {
+        const char* cyanStart = g_supportsANSI ? "\033[36m" : "";
+        const char* cyanEnd = g_supportsANSI ? "\033[0m" : "";
+        snprintf(message, sizeof(message), "%s:%d/udp %sopen|filtered%s", ip, port, cyanStart, cyanEnd);
+        add_udp_result(ipIndex, port, message);
+        return 1;
+    }
+    return 0;
+}
+
+unsigned __stdcall udp_port_thread(void* param) {
+    ThreadData* data = (ThreadData*)param;
+    scan_udp_port(data->ip, data->port, data->ipIndex);
+    free(data);
+    InterlockedIncrement(&g_udpProgress);
+    // Delay to avoid ICMP rate limiting (500ms between probes)
+    Sleep(500);
+    return 0;
+}
+
+// ----------------------
 // run_port_scan: Main scanning function.
 // ----------------------
 int run_port_scan(const char* targetSpec, const char* portRange) {
@@ -689,6 +841,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
     }
     g_pingProgress = 0;
     g_portProgress = 0;
+    g_udpProgress = 0;
 
     // Record start time.
     DWORD startTime = GetTickCount();
@@ -768,6 +921,9 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
         ipRes->openPorts = NULL;
         ipRes->openCount = 0;
         ipRes->openCapacity = 0;
+        ipRes->openUdpPorts = NULL;
+        ipRes->openUdpCount = 0;
+        ipRes->openUdpCapacity = 0;
         ipRes->responded = 0; // Initialize as not responded.
         InitializeCriticalSection(&ipRes->cs);
     }
@@ -906,6 +1062,74 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
             CloseHandle(portProgHandle);
             printf("\n");
         }
+
+        // UDP scan (if enabled) - single thread to avoid ICMP rate limiting
+        if (g_udpEnabled && g_udpPortCount > 0) {
+            long udpTaskTotal = 0;
+            for (uint32_t ip = ipStart; ip <= ipEnd; ip++) {
+                int ipIndex = (int)(ip - ipStart);
+                if (g_pingEnabled && !g_ipResults[ipIndex].responded) continue;
+                udpTaskTotal += g_udpPortCount;
+            }
+
+            ProgressCtx udpCtx = { "UDP", &g_udpProgress, (int)udpTaskTotal, 0 };
+            HANDLE udpProgHandle = NULL;
+            if (udpTaskTotal > 0) {
+                udpProgHandle = (HANDLE)_beginthreadex(NULL, 0, progress_thread, &udpCtx, 0, NULL);
+            }
+
+            int udpThreadCount = 0;
+            int udpCapacity = 1; // Single thread for UDP (ICMP rate limiting)
+            HANDLE* udpHandles = (HANDLE*)malloc(sizeof(HANDLE) * udpCapacity);
+            if (udpHandles) {
+                for (uint32_t ip = ipStart; ip <= ipEnd; ip++) {
+                    char ipStr[INET_ADDRSTRLEN];
+                    int_to_ip(ip, ipStr);
+                    int ipIndex = (int)(ip - ipStart);
+
+                    if (g_pingEnabled && !g_ipResults[ipIndex].responded)
+                        continue;
+
+                    for (int i = 0; i < g_udpPortCount; i++) {
+                        int port = g_udpPorts[i];
+                        ThreadData* data = (ThreadData*)malloc(sizeof(ThreadData));
+                        if (!data)
+                            continue;
+                        strncpy(data->ip, ipStr, INET_ADDRSTRLEN);
+                        data->ip[INET_ADDRSTRLEN - 1] = '\0';
+                        data->port = port;
+                        data->ipIndex = ipIndex;
+                        uintptr_t hThread = _beginthreadex(NULL, 0, udp_port_thread, data, 0, NULL);
+                        if (hThread != 0) {
+                            if (udpThreadCount >= udpCapacity) {
+                                WaitForMultipleObjects(udpThreadCount, udpHandles, TRUE, INFINITE);
+                                for (int j = 0; j < udpThreadCount; j++)
+                                    CloseHandle(udpHandles[j]);
+                                udpThreadCount = 0;
+                            }
+                            udpHandles[udpThreadCount++] = (HANDLE)hThread;
+                        }
+                        else {
+                            free(data);
+                        }
+                    }
+                }
+                if (udpThreadCount > 0) {
+                    WaitForMultipleObjects(udpThreadCount, udpHandles, TRUE, INFINITE);
+                    for (int i = 0; i < udpThreadCount; i++) {
+                        CloseHandle(udpHandles[i]);
+                    }
+                }
+                free(udpHandles);
+            }
+            if (udpProgHandle) {
+                udpCtx.stopFlag = 1;
+                WaitForSingleObject(udpProgHandle, INFINITE);
+                CloseHandle(udpProgHandle);
+                printf("\n");
+            }
+        }
+
         WSACleanup();
         if (portList) free(portList);
     }
@@ -934,7 +1158,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
 
     for (int i = 0; i < g_ipCount; i++) {
         IPResult* ipRes = &g_ipResults[i];
-        if (ipRes->openCount > 0) {
+        if (ipRes->openCount > 0 || ipRes->openUdpCount > 0) {
             if (g_isPingOnly) {
                 if (ipRes->netbiosName[0] != '\0') {
                     append(output, "%s (%s) responded to ping\n", ipRes->ip, ipRes->netbiosName);
@@ -945,24 +1169,32 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
                 }
             }
             else {
-                // Sort the ports array in ascending order.
-                qsort(ipRes->openPorts, ipRes->openCount, sizeof(int), cmp_int);
-
-                char portsStr[512] = { 0 };
-                size_t offset = 0;
-                for (int j = 0; j < ipRes->openCount; j++) {
-                    int n = snprintf(portsStr + offset, sizeof(portsStr) - offset, "%d%s",
-                        ipRes->openPorts[j], (j < ipRes->openCount - 1 ? "," : ""));
-                    if (n < 0 || (size_t)n >= sizeof(portsStr) - offset)
-                        break;
-                    offset += n;
-                }
                 if (ipRes->netbiosName[0] != '\0') {
-                    append(output, "%s: %s (%s)\n", ipRes->ip, portsStr, ipRes->netbiosName);
+                    append(output, "%s (%s): ", ipRes->ip, ipRes->netbiosName);
                 }
                 else {
-                    append(output, "%s: %s\n", ipRes->ip, portsStr);
+                    append(output, "%s: ", ipRes->ip);
                 }
+
+                // Print TCP ports
+                if (ipRes->openCount > 0) {
+                    qsort(ipRes->openPorts, ipRes->openCount, sizeof(int), cmp_int);
+                    append(output, "TCP ");
+                    for (int j = 0; j < ipRes->openCount; j++) {
+                        append(output, "%d%s", ipRes->openPorts[j], (j < ipRes->openCount - 1 ? "," : ""));
+                    }
+                }
+
+                // Print UDP ports
+                if (ipRes->openUdpCount > 0) {
+                    if (ipRes->openCount > 0) append(output, " | ");
+                    qsort(ipRes->openUdpPorts, ipRes->openUdpCount, sizeof(int), cmp_int);
+                    append(output, "UDP ");
+                    for (int j = 0; j < ipRes->openUdpCount; j++) {
+                        append(output, "%d%s", ipRes->openUdpPorts[j], (j < ipRes->openUdpCount - 1 ? "," : ""));
+                    }
+                }
+                append(output, "\n");
             }
         }
     }
@@ -998,6 +1230,9 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
     g_pingEnabled = 1;
     g_isPingOnly = 0;
     g_netbiosEnabled = 0;
+    g_udpEnabled = 0;
+    if (g_udpPorts) { free(g_udpPorts); g_udpPorts = NULL; }
+    g_udpPortCount = 0;
     int isNoPorts = 0;
 
     if (bufferSize < 1) {
@@ -1024,8 +1259,12 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
         append(output, "  -r <num>:  Set extra rechecks for unanswered ports (default: 0, max: 10)\n");
         append(output, "  -Pn:       Disable ping (skip host discovery)\n");
         append(output, "  -i:        Perform ping scan only (skip port scan)\n");
+        append(output, "  -sU:       Enable UDP scan (uses TOP 12 UDP ports if no ports specified)\n");
         append(output, "  -Nb:       Enable hostname resolution via reverse DNS lookup\n");
         append(output, "  -h:        Display this help message\n");
+        append(output, "\nUDP Scanning Notes:\n");
+        append(output, "  Default UDP ports: 53,67,68,69,123,137,138,161,500,514,1194,1900\n");
+        append(output, "  UDP scanning is slower due to ICMP rate limiting on targets\n");
         free(buf);
         return success(output);
     }
@@ -1065,6 +1304,9 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
             else if (strcmp(token, "-Nb") == 0) {
                 g_netbiosEnabled = 1;
             }
+            else if (strcmp(token, "-sU") == 0) {
+                g_udpEnabled = 1;
+            }
         }
         else {
             if (targetRange == NULL) {
@@ -1099,6 +1341,23 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
         g_isPingOnly = 0;
     }
 
+    // Set up UDP ports if -sU is enabled
+    int udpUsingDefault = 0;
+    if (g_udpEnabled && !g_isPingOnly) {
+        const char* udpPortSpec = portRange;
+        if (isNoPorts) {
+            // Use default UDP ports when no explicit ports specified
+            udpPortSpec = DEFAULT_UDP_PORTS;
+            udpUsingDefault = 1;
+        }
+        if (!parse_ports(udpPortSpec, &g_udpPorts, &g_udpPortCount)) {
+            append(output, "[!] Invalid UDP port specification.\n");
+            free(targetRange);
+            if (portRange) free(portRange);
+            return failure(output);
+        }
+    }
+
     if (!g_headerPrintedStdout) {
         print_header_stdout();
         g_headerPrintedStdout = true;
@@ -1108,12 +1367,16 @@ int Execute(char* argsBuffer, uint32_t bufferSize, goCallback callback) {
     if (g_supportsANSI) printf("\033[97m");
     printf("[.] Scanning Target: %s\n", targetRange);
     if (!g_isPingOnly) {
-        if (!isNoPorts) printf("[.] PORT(s): %s\n", portRange);
-        else printf("[.] PORT(s): TOP 123\n");
+        if (!isNoPorts) printf("[.] TCP ports: %s\n", portRange);
+        else printf("[.] TCP ports: TOP 123\n");
+        if (g_udpEnabled) {
+            if (udpUsingDefault) printf("[.] UDP ports: TOP 12 (53,67,68,69,123,137,138,161,500,514,1194,1900)\n");
+            else printf("[.] UDP ports: %s\n", portRange);
+        }
     } else {
         printf("[.] Ping-only scan mode\n");
     }
-    printf("[.] Threads: %d   Rechecks: %d   Timeout: %d\n", g_threadLimit, g_rechecks, g_ctimeout);
+    printf("[.] Threads: %d   Rechecks: %d   Timeout: %d ms\n", g_threadLimit, g_rechecks, g_ctimeout);
     if (!g_pingEnabled) printf("[.] Ping disabled (-Pn flag used)\n");
     if (g_supportsANSI) printf("\033[0m");
     printf("\n");
