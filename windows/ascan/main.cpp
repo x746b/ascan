@@ -744,11 +744,16 @@ int scan_udp_port(const char* ip, int port, int ipIndex) {
         if (sock == INVALID_SOCKET)
             continue;
 
-        // Set socket to report ICMP errors
-        BOOL bNewBehavior = FALSE;
+        // Ensure ICMP errors are reported on connected UDP sockets (default on Windows, but be explicit)
+        // SIO_UDP_CONNRESET controls whether ICMP port unreachable triggers WSAECONNRESET
+        BOOL bNewBehavior = TRUE;
         DWORD dwBytesReturned = 0;
-        // SIO_UDP_CONNRESET: When FALSE, ICMP port unreachable won't reset the socket
-        // We actually want it to report errors, so we don't set this
+        WSAIoctl(sock, SIO_UDP_CONNRESET, &bNewBehavior, sizeof(bNewBehavior),
+                 NULL, 0, &dwBytesReturned, NULL, NULL);
+
+        // Set socket to non-blocking mode
+        u_long mode = 1;
+        ioctlsocket(sock, FIONBIO, &mode);
 
         struct sockaddr_in server;
         memset(&server, 0, sizeof(server));
@@ -762,48 +767,46 @@ int scan_udp_port(const char* ip, int port, int ipIndex) {
             continue;
         }
 
-        // Send probe
+        // Send probe packet
         char probe[1] = { 0 };
         if (send(sock, probe, sizeof(probe), 0) == SOCKET_ERROR) {
             int err = WSAGetLastError();
             if (err == WSAECONNRESET) {
                 is_closed = 1;
+                closesocket(sock);
+                continue;
             }
-            closesocket(sock);
-            continue;
+            // WSAEWOULDBLOCK is expected for non-blocking, ignore it
+            if (err != WSAEWOULDBLOCK) {
+                closesocket(sock);
+                continue;
+            }
         }
 
-        // Wait for response or ICMP error
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(sock, &readfds);
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = g_ctimeout * 1000;
+        // Wait for ICMP error to arrive (give target time to respond)
+        Sleep(g_ctimeout);
 
-        int sel = select(0, &readfds, NULL, NULL, &tv);
-        if (sel > 0) {
-            char buf[512];
-            int n = recv(sock, buf, sizeof(buf), 0);
-            if (n > 0) {
-                // Got actual response - port is definitely open
+        // Now try to receive - this will return WSAECONNRESET if ICMP port unreachable arrived
+        char buf[512];
+        int n = recv(sock, buf, sizeof(buf), 0);
+        if (n > 0) {
+            // Got actual response - port is definitely open
+            is_open = 1;
+        }
+        else if (n == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            if (err == WSAECONNRESET) {
+                // ICMP port unreachable received - port is closed
+                is_closed = 1;
+            }
+            else if (err == WSAEWOULDBLOCK) {
+                // No response and no ICMP error - port is open|filtered
                 is_open = 1;
             }
-            else if (n == SOCKET_ERROR) {
-                int err = WSAGetLastError();
-                if (err == WSAECONNRESET) {
-                    // ICMP port unreachable received
-                    is_closed = 1;
-                }
-                else {
-                    // Other error, treat as open|filtered
-                    is_open = 1;
-                }
+            else {
+                // Other error - try again or treat as filtered
+                is_open = 1;
             }
-        }
-        else if (sel == 0) {
-            // Timeout - no ICMP error, port is open|filtered
-            is_open = 1;
         }
 
         closesocket(sock);
@@ -825,8 +828,6 @@ unsigned __stdcall udp_port_thread(void* param) {
     scan_udp_port(data->ip, data->port, data->ipIndex);
     free(data);
     InterlockedIncrement(&g_udpProgress);
-    // Delay to avoid ICMP rate limiting (500ms between probes)
-    Sleep(500);
     return 0;
 }
 
