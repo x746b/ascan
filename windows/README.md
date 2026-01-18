@@ -1,32 +1,48 @@
-# ArtScan (Windows version)
+# ArtScan
 
-ArtScan is a tiny, convenient, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only 25 KB.
+ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C. It is perfect for pentesting and red team engagements. Its size is only 25 KB.
 
-This fork by @xtk adds UDP scanning.
+This fork by @xtk adds UDP scanning to both Linux and Windows versions, plus unprivileged ICMP on Linux (no sudo required).
 
-![ArtScan](images/ascan.png)
+![ArtScan](images/ascan_win_tcp.png)
 
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Super fast smart scan of TOP 123 most common TCP ports by default
+* Super fast smart scan of TOP 124 most common TCP ports by default
 * UDP scanning with TOP 12 common UDP ports (DNS, SNMP, NTP, DHCP, etc.)
+* No sudo required on Linux - uses unprivileged ICMP sockets (Linux 3.0+)
 * Scan progress indicator
 * Perform ping scan only (skip port scan)
 * Capture banners and HTTP responses on open ports
 * Scan by IP and FQDN
 * Brief, sorted scan summary
 
+## Quick Start
+
+### Linux
+```bash
+cd linux
+gcc -O2 -std=gnu11 -pthread -o ascan ascan.c
+./ascan 192.168.1.1 -sU
+```
+
+### Windows
+Open `windows/ascan.sln` in Visual Studio and build, or use pre-built binaries.
+```
+ascan.exe 192.168.1.1 -sU
+```
+
 ## Usage
 
 ```
-Usage: <target> [portRange] [options]
+Usage: <target> [ports] [options]
   target:    Hostname (e.g., scanme.nmap.org), single IP, or range (192.168.1.1-100)
-  portRange: Single port, range (80-90), comma-separated list (22,80,443), or 'all'
+  ports:     Single port, range (80-90), comma-separated list (22,80,443), or 'all'
 Options:
-  -T <num>:  Set thread limit (default: 20, max: 50)
+  -T <num>:  Set thread limit (default: 100 Linux, 20 Windows)
   -t <ms>:   Set port scan timeout in msec (default: 300)
-  -r <num>:  Set extra rechecks for unanswered ports (default: 0, max: 10)
+  -r <num>:  Set extra rechecks for unanswered ports (default: 0)
   -Pn:       Disable ping (skip host discovery)
   -i:        Perform ping scan only (skip port scan)
   -sU:       Enable UDP scan (uses TOP 12 UDP ports if no ports specified)
@@ -38,25 +54,27 @@ Options:
 
 ```bash
 # Basic TCP scan (TOP 123 ports)
-ascan.exe 192.168.1.1
+./ascan 192.168.1.1
 
 # TCP + UDP scan (TOP 123 TCP + TOP 12 UDP)
-ascan.exe 192.168.1.1 -sU
+./ascan 192.168.1.1 -sU
 
 # Scan specific ports (TCP + UDP)
-ascan.exe 192.168.1.1 22,53,80,161,443 -sU
+./ascan 192.168.1.1 22,53,80,161,443 -sU
 
 # Scan IP range
-ascan.exe 192.168.1.1-254
+./ascan 192.168.1.1-254
 
 # Skip ping, scan directly
-ascan.exe 10.10.10.10 -Pn
+./ascan 10.10.10.10 -Pn
 
 # Ping sweep only
-ascan.exe 192.168.1.1-254 -i
+./ascan 192.168.1.1-254 -i
 ```
 
-## UDP Scanning Notes
+## UDP Scanning
+
+![ArtScan](images/ascan_win_udp.png)
 
 Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900
 
@@ -77,8 +95,10 @@ UDP scanning is inherently slower than TCP due to ICMP rate limiting on target h
 
 ## Fork Changes (by @xtk)
 
-- UDP scanning: Added `-sU` flag with smart default port list for common UDP services
+- UDP scanning: Added `-sU` flag with smart default port list for common UDP services (both platforms)
+- Unprivileged ICMP (Linux): Uses `SOCK_DGRAM` ICMP sockets instead of raw sockets - no root/sudo required on modern Linux (3.0+)
 - Separate port lists: TCP and UDP can use different port lists (UDP defaults to TOP 12 when not specified)
+- Portable compilation: Fixed `linux/errqueue.h` include for musl-gcc static builds
 
 ## Credits
 
