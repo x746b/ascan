@@ -4,7 +4,7 @@ ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C
 
 This fork by @xtk adds UDP scanning to both Linux and Windows versions, plus unprivileged ICMP on Linux (no sudo required).
 
-![ArtScan](images/ascan.png)
+![ArtScan](images/ascan_win_tcp.png)
 
 ## Platforms
 
@@ -16,7 +16,7 @@ This fork by @xtk adds UDP scanning to both Linux and Windows versions, plus unp
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Super fast smart scan of TOP 123 most common TCP ports by default
+* Super fast smart scan of TOP 124 most common TCP ports by default
 * UDP scanning with TOP 12 common UDP ports (DNS, SNMP, NTP, DHCP, etc.)
 * No sudo required on Linux - uses unprivileged ICMP sockets (Linux 3.0+)
 * Scan progress indicator
@@ -80,6 +80,8 @@ Options:
 ```
 
 ## UDP Scanning
+
+![ArtScan](images/ascan_win_udp.png)
 
 Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900
 
