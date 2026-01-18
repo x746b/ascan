@@ -2,8 +2,13 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <mstcpip.h>  // For SIO_UDP_CONNRESET
+#include <mstcpip.h>
 #include <windows.h>
+
+// Fallback definition for SIO_UDP_CONNRESET (may not be defined in older SDKs)
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
+#endif
 #include <iphlpapi.h>
 #include <icmpapi.h>
 #include <stdint.h>
