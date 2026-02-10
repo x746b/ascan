@@ -4,7 +4,7 @@ ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C
 
 ---
 
-This fork adds UDP scanning to both Linux and Windows versions, plus unprivileged ICMP on Linux (no sudo required).
+> This fork adds UDP scanning to both Linux and Windows versions, plus unprivileged ICMP on Linux (no sudo required).
 
 ---
 
