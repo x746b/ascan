@@ -86,7 +86,7 @@ Options:
 
 Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 88, 123, 137, 138, 161, 389, 500, 514, 623, 1194, 1900, 5353
 
-Protocol-specific probes (sourced from [udpz](https://github.com/nullt3r/udpz)) are sent to known services. A response confirms the port as definitively **open** (green). Ports without probes fall back to a null byte and show `open|filtered` (cyan).
+Protocol-specific probes (sourced from [udpx](https://github.com/nullt3r/udpx)) are sent to known services. A response confirms the port as definitively **open** (green). Ports without probes fall back to a null byte and show `open|filtered` (cyan).
 
 | Port | Service | Probes |
 |------|---------|--------|
