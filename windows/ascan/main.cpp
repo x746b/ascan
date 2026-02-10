@@ -1181,7 +1181,7 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
             portTaskTotal += portCount;
         }
 
-        ProgressCtx portCtx = { "Ports", &g_portProgress, (int)portTaskTotal, 0 };
+        ProgressCtx portCtx = { "TCP", &g_portProgress, (int)portTaskTotal, 0 };
         HANDLE portProgHandle = NULL;
         if (portTaskTotal > 0) {
             portProgHandle = (HANDLE)_beginthreadex(NULL, 0, progress_thread, &portCtx, 0, NULL);
@@ -1240,7 +1240,6 @@ int run_port_scan(const char* targetSpec, const char* portRange) {
             portCtx.stopFlag = 1;
             WaitForSingleObject(portProgHandle, INFINITE);
             CloseHandle(portProgHandle);
-            printf("\n");
         }
 
         if (g_udpEnabled && g_udpPortCount > 0) {
