@@ -79,8 +79,6 @@ Options:
 
 ## UDP Scanning
 
-![ArtScan](images/ascan_win_udp.png)
-
 Default UDP ports scanned with `-sU`: 53, 67, 68, 69, 123, 137, 138, 161, 500, 514, 1194, 1900
 
 | Port | Service |
