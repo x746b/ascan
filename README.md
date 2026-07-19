@@ -18,7 +18,7 @@ ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C
 ## Features
 
 * IP ranges and port ranges scan with threads and timeout adjustments
-* Super fast smart scan of TOP 123 most common TCP ports by default
+* Super fast smart scan of TOP 140 most common TCP ports by default (incl. message-queue brokers: MQTT, ActiveMQ, RabbitMQ, Kafka, NATS, Pulsar, IBM MQ)
 * UDP scanning with TOP 16 common UDP ports and protocol-specific probes
 * No sudo required on Linux - uses unprivileged ICMP sockets (Linux 3.0+)
 * Scan progress indicator
@@ -42,6 +42,35 @@ Open `windows/ascan.sln` in Visual Studio and build, or use pre-built binaries.
 ascan.exe 192.168.1.1 -sU
 ```
 
+## Building from Source (Kali Linux)
+
+All three binaries in [`bin/`](bin/) are built from a Kali Linux host (aarch64). Install the cross toolchains once:
+
+```bash
+sudo apt install gcc gcc-x86-64-linux-gnu g++-mingw-w64-x86-64
+```
+
+Then build from the repository root:
+
+```bash
+# Native Linux binary (matches the host arch, e.g. aarch64 on Kali ARM)
+gcc -O2 -pthread linux/ascan.c -o bin/ascan
+
+# x86_64 Linux binary (e.g. for x86_64 targets when building on Kali ARM)
+x86_64-linux-gnu-gcc -O2 -pthread linux/ascan.c -o bin/ascan_x86
+
+# Windows x86_64 binary (mingw cross-compile, statically linked - no DLLs needed)
+cd windows/ascan
+x86_64-w64-mingw32-g++ -O2 -static -o ../../bin/ascan.exe \
+    main.cpp output.cpp pch.cpp -lws2_32 -liphlpapi
+```
+
+Notes:
+- `-static` bundles the mingw runtime so `ascan.exe` runs on a bare Windows host.
+- `-lws2_32 -liphlpapi` are linked explicitly because mingw ignores the MSVC `#pragma comment(lib, ...)` directives in the source.
+- On an x86_64 Kali host, the native `gcc` build already produces an x86_64 binary, so the separate `ascan_x86` step is only needed when cross-compiling from a different arch (e.g. ARM).
+- This produces a mingw build, not an MSVC one - for an MSVC toolchain binary, build `windows/ascan.sln` in Visual Studio on Windows.
+
 ## Usage
 
 ```
@@ -63,10 +92,10 @@ Options:
 ## Examples
 
 ```bash
-# Basic TCP scan (TOP 123 ports)
+# Basic TCP scan (TOP 140 ports)
 ./ascan 192.168.1.1
 
-# TCP + UDP scan (TOP 123 TCP + TOP 16 UDP)
+# TCP + UDP scan (TOP 140 TCP + TOP 16 UDP)
 ./ascan 192.168.1.1 -sU
 
 # Scan specific ports (TCP + UDP)
