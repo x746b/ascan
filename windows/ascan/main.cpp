@@ -320,7 +320,7 @@ static void print_header_stdout() {
     if (g_supportsANSI) printf("\033[32m");
     printf("ArtScan by @art3x (Windows)\n");
     if (g_supportsANSI) printf("\033[35m");
-    printf("forked by xtk -> added UDP scan\n");
+    printf("forked by xtk (v1.6) -> added UDP scan\n");
     if (g_supportsANSI) printf("\033[34m");
     printf("https://github.com/art3x\n");
     if (g_supportsANSI) printf("\033[0m");

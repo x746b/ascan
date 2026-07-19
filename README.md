@@ -1,5 +1,7 @@
 # ArtScan
 
+> **Fork version: v1.6**
+
 ArtScan is a multiplatform, tiny, smart, and very fast port scanner written in C. It is perfect for pentesting and red team engagements.
 
 ---

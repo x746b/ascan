@@ -321,7 +321,7 @@ static void print_header(void) {
     printf("|     |  _|  _|__   |  _| .'|   |\n");
     printf("|__|__|_| |_| |_____|___|__,|_|_|\n");
     printf("\033[32mArtScan by @art3x (Linux)\033[0m\n");
-    printf("\033[35mforked by xtk -> added UDP scan & unprivileged ICMP\033[0m\n");
+    printf("\033[35mforked by xtk (v1.6) -> added UDP scan & unprivileged ICMP\033[0m\n");
     printf("\033[34mhttps://github.com/art3x\033[0m\n");
     printf("\033[34mhttps://github.com/x746b/ascan\033[0m\n\n");
 }
