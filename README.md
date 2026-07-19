@@ -59,7 +59,9 @@ Then build from the repository root:
 gcc -O2 -pthread linux/ascan.c -o bin/ascan
 
 # x86_64 Linux binary (e.g. for x86_64 targets when building on Kali ARM)
-x86_64-linux-gnu-gcc -O2 -pthread linux/ascan.c -o bin/ascan_x86
+# -static avoids GLIBC version mismatches when running on older distros
+# (e.g. a Kali-built binary failing on Ubuntu 22.04 with "GLIBC_2.38 not found")
+x86_64-linux-gnu-gcc -O2 -static -pthread linux/ascan.c -o bin/ascan_x86
 
 # Windows x86_64 binary (mingw cross-compile, statically linked - no DLLs needed)
 cd windows/ascan
